@@ -41,6 +41,7 @@ input[type=text],select{width:100%;font:inherit;padding:8px;border:1px solid var
 .fx{position:absolute;inset:0;pointer-events:none}
 .tg{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:8px}
 .tool{border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin-top:8px}
+.tool select{margin-top:8px}
 </style>
 </head>
 <body>
@@ -52,12 +53,12 @@ input[type=text],select{width:100%;font:inherit;padding:8px;border:1px solid var
   <section class="card">
     <div class="stage" id="stage">
       <video id="v" playsinline></video>
-      <div class="fx" id="vg"></div><div class="fx" id="fd" style="background:#000;opacity:0"></div><div class="ov" id="ov"></div>
+      <div class="fx" id="ph"></div><div class="fx" id="vg"></div><div class="fx" id="fd" style="background:#000;opacity:0"></div><div class="ov" id="ov"></div>
       <div class="empty" id="empty">Importa un vídeo para empezar a editarlo.</div>
     </div>
-    <label>Inicio del recorte <b id="la">0.0 s</b></label>
+    <label>Acortar: desde <b id="la">0.0 s</b></label>
     <input type="range" id="a" min="0" max="1" step="0.1" value="0">
-    <label>Final del recorte <b id="lb">0.0 s</b></label>
+    <label>Acortar: hasta <b id="lb">0.0 s</b></label>
     <input type="range" id="b" min="0" max="1" step="0.1" value="1">
     <div class="row">
       <button id="play" class="p" disabled>Reproducir recorte</button>
@@ -68,20 +69,6 @@ input[type=text],select{width:100%;font:inherit;padding:8px;border:1px solid var
     <div id="out"></div>
   </section>
 
-  <section class="card">
-    <h2>Ajustes</h2>
-    <label>Nombre del proyecto</label>
-    <input type="text" id="name" placeholder="Mi vídeo">
-    <label>Velocidad <b id="lsp">1×</b></label>
-    <input type="range" id="sp" min="0.25" max="3" step="0.25" value="1">
-    <label>Brillo <b id="lbr">100%</b></label>
-    <input type="range" id="br" min="50" max="150" value="100">
-    <label>Contraste <b id="lco">100%</b></label>
-    <input type="range" id="co" min="50" max="150" value="100">
-    <label>Saturación <b id="lsa">100%</b></label>
-    <input type="range" id="sa" min="0" max="200" value="100">
-    <label>Blanco y negro <b id="lgr">0%</b></label>
-    <input type="range" id="gr" min="0" max="100" value="0">
     <label>Texto sobre el vídeo</label>
     <input type="text" id="txt" placeholder="Escribe un título">
     <div class="row">
@@ -94,7 +81,12 @@ input[type=text],select{width:100%;font:inherit;padding:8px;border:1px solid var
   <section class="card full">
     <h2>Herramientas</h2>
     <div class="row" style="margin-top:0"><select id="tsel" style="flex:1;min-width:160px"></select><button id="tadd" class="p">Añadir herramienta</button></div>
-    <div id="tools" class="tg"></div>
+    <div id="tools" class="tg"></div></section>
+  <section class="card full">
+    <h2>Montaje</h2>
+    <div class="row" style="margin-top:0"><label class="btn" style="margin:0">Añadir vídeo<input id="fvid" type="file" accept="video/*" hidden></label><label class="btn" style="margin:0">Añadir foto<input id="fimg" type="file" accept="image/*" hidden></label><label class="btn" style="margin:0">Añadir música<input id="faud" type="file" accept="audio/*" hidden></label></div>
+    <p class="note">Los vídeos añadidos se unen al final al exportar. Los segundos de las fotos cuentan desde el inicio del vídeo ya acortado.</p>
+    <div id="mont" class="tg"></div>
   </section>
 
   <section class="card full">
@@ -113,117 +105,20 @@ const Store={db:null,
   open(){return new Promise((ok,no)=>{const r=indexedDB.open('taller-video',1);
     r.onupgradeneeded=()=>r.result.createObjectStore('p',{keyPath:'id'});
     r.onsuccess=()=>{this.db=r.result;ok()};r.onerror=()=>no(r.error)})},
-  tx(m,f){return new Promise((ok,no)=>{const t=this.db.transaction('p',m);const q=f(t.objectStore('p'));
-    t.oncomplete=()=>ok(q.result);t.onerror=()=>no(t.error)})},
-  all(){return this.tx('readonly',s=>s.getAll())},
-  put(p){return this.tx('readwrite',s=>s.put(p))},
-  del(id){return this.tx('readwrite',s=>s.delete(id))}
-};
-
-/* ---------- Servicio de edición ---------- */
-const DEF={a:0,b:null,sp:1,br:100,co:100,sa:100,gr:0,txt:'',pos:'bot',sz:8,mute:false};
-let cur=null,url=null;
-const ids=['sp','br','co','sa','gr','sz'];
-const unit={sp:'×',br:'%',co:'%',sa:'%',gr:'%',sz:''};
-
-/* ---------- Herramientas añadibles ----------
-   Para crear una nueva, añade una entrada a TOOLS:
-   name, min/max/step/def/unit (slider) y css(v) si es un filtro de color.
-   Las que no son filtros (viñeta, fundido, girar, espejo) se dibujan en geo(), fxPreview() y exportar. */
-const TOOLS={
-  sepia:{name:'Sepia',min:0,max:100,def:70,unit:'%',css:v=>`sepia(${v}%)`},
-  blur:{name:'Desenfoque',min:1,max:12,def:3,unit:' px',css:v=>`blur(${v}px)`},
-  hue:{name:'Cambio de color',min:0,max:360,def:90,unit:'°',css:v=>`hue-rotate(${v}deg)`},
-  inv:{name:'Invertir colores',min:0,max:100,def:100,unit:'%',css:v=>`invert(${v}%)`},
-  vig:{name:'Viñeta',min:10,max:100,def:60,unit:'%'},
-  fade:{name:'Fundido a negro (inicio y final)',min:0.5,max:3,step:0.5,def:1,unit:' s'},
-  rot:{name:'Girar',min:90,max:270,step:90,def:90,unit:'°'},
-  flip:{name:'Espejo horizontal'}
-};
-function tv(k){const t=(cur.s.tools||[]).find(t=>t.k===k);return t?t.v:null}
-function fadeA(t){const d=tv('fade');if(!d)return 0;return Math.min(1,Math.max(0,1-(t-cur.s.a)/d,1-(cur.s.b-t)/d))}
-function geo(){const f=tv('flip')?-1:1,r=tv('rot')||0,sw=$('#stage').clientWidth,sh=$('#stage').clientHeight;
-  const sc=(r%180)?Math.min(sw/sh,sh/sw):1;v.style.transform=`rotate(${r}deg) scale(${f*sc},${sc})`}
-function fxPreview(){const vg=tv('vig');
-  $('#vg').style.background=vg?`radial-gradient(ellipse at center,transparent ${70-vg*.4}%,rgba(0,0,0,${vg/100}) 100%)`:'none'}
-(function tick(){if(cur)$('#fd').style.opacity=fadeA(v.currentTime);requestAnimationFrame(tick)})();
-function renderTools(){
-  const box=$('#tools');box.innerHTML='';
-  (cur?cur.s.tools:[]).forEach((t,i)=>{
-    const T=TOOLS[t.k],d=document.createElement('div');d.className='tool';
-    d.innerHTML=`<div class="row" style="justify-content:space-between;margin:0"><strong>${T.name}</strong><button class="d">Quitar</button></div>`+
-      (T.max?`<input type="range" min="${T.min}" max="${T.max}" step="${T.step||1}" value="${t.v}"><span class="note">${t.v}${T.unit}</span>`:'');
-    const r=d.querySelector('input'),n=d.querySelector('span');
-    if(r)r.oninput=()=>{t.v=+r.value;n.textContent=t.v+T.unit;Editor.apply()};
-    d.querySelector('button').onclick=()=>{cur.s.tools.splice(i,1);renderTools();Editor.apply()};
-    box.append(d);
-  });
-}
-$('#tsel').innerHTML=Object.entries(TOOLS).map(([k,T])=>`<option value="${k}">${T.name}</option>`).join('');
-$('#tadd').onclick=()=>{
-  if(!cur)return;const k=$('#tsel').value;
-  if(cur.s.tools.some(t=>t.k===k))return;
-  cur.s.tools.push({k,v:TOOLS[k].def||1});renderTools();Editor.apply();
-};
-
-const Editor={
-  filter(s){return `brightness(${s.br}%) contrast(${s.co}%) saturate(${s.sa}%) grayscale(${s.gr}%) `+(s.tools||[]).map(t=>TOOLS[t.k].css?TOOLS[t.k].css(t.v):'').join(' ')},
-  apply(){
-    const s=cur.s;
-    v.style.filter=this.filter(s);geo();fxPreview();
-    v.playbackRate=s.sp;v.muted=s.mute;
-    const o=$('#ov');o.textContent=s.txt;o.style.setProperty('--sz',s.sz);
-    o.style.top=s.pos==='top'?'6%':s.pos==='mid'?'42%':'auto';
-    o.style.bottom=s.pos==='bot'?'6%':'auto';
-    ids.forEach(k=>$('#l'+k).textContent=s[k]+unit[k]);
-    $('#la').textContent=s.a.toFixed(1)+' s';$('#lb').textContent=s.b.toFixed(1)+' s';
-  },
-  load(p){
-    if(url)URL.revokeObjectURL(url);
-    cur={...p,s:{...DEF,...p.s}};cur.s.tools=[...(p.s.tools||[])];
-    url=URL.createObjectURL(p.blob);v.src=url;
-    $('#empty').style.display='none';$('#out').innerHTML='';
-    v.onloadedmetadata=()=>{
-      const d=v.duration;
-      if(cur.s.b==null||cur.s.b>d)cur.s.b=d;
-      $('#stage').style.aspectRatio=v.videoWidth+'/'+v.videoHeight;
-      ['a','b'].forEach(k=>{$('#'+k).max=d;$('#'+k).value=cur.s[k]});
-      ids.forEach(k=>$('#'+k).value=cur.s[k]);
-      $('#txt').value=cur.s.txt;$('#pos').value=cur.s.pos;$('#mute').checked=cur.s.mute;
-      $('#name').value=cur.name;
-      ['play','save','exp'].forEach(i=>$('#'+i).disabled=false);
-      v.currentTime=cur.s.a;this.apply();renderTools();
-    };
-  },
-  async export(){
-    const s=cur.s,w=v.videoWidth,h=v.videoHeight;
-    const r=tv('rot')||0,cw=r%180?h:w,ch=r%180?w:h;const c=document.createElement('canvas');c.width=cw;c.height=ch;const x=c.getContext('2d');
-    const st=c.captureStream(30);
-    if(!s.mute){try{v.captureStream().getAudioTracks().forEach(t=>st.addTrack(t))}catch(e){}}
-    const mime=['video/webm;codecs=vp9,opus','video/webm','video/mp4'].find(m=>MediaRecorder.isTypeSupported(m));
-    if(!mime)throw new Error('Este navegador no puede exportar vídeo.');
-    const rec=new MediaRecorder(st,{mimeType:mime}),chunks=[];
-    rec.ondataavailable=e=>chunks.push(e.data);
-    const done=new Promise(r=>rec.onstop=r);
-    v.pause();v.currentTime=s.a;
-    await new Promise(r=>v.addEventListener('seeked',r,{once:true}));
-    this.apply();rec.start();await v.play();
-    const bar=$('#bar');bar.style.display='block';
-    const draw=()=>{
-      x.save();x.translate(cw/2,ch/2);x.rotate(r*Math.PI/180);if(tv('flip'))x.scale(-1,1);x.filter=this.filter(s);x.drawImage(v,-w/2,-h/2,w,h);x.restore();
+      cur.photos.forEach(p=>{const T=off+v.currentTime-A;if(T>=p.t&&T<p.t+p.d)drawPhoto(x,p,cw,ch)});
       const vg=tv('vig');if(vg){const g=x.createRadialGradient(cw/2,ch/2,Math.min(cw,ch)*(.35-vg/400),cw/2,ch/2,Math.max(cw,ch)*.7);g.addColorStop(0,'rgba(0,0,0,0)');g.addColorStop(1,`rgba(0,0,0,${vg/100})`);x.fillStyle=g;x.fillRect(0,0,cw,ch)}
-      const fa=fadeA(v.currentTime);if(fa>0){x.fillStyle=`rgba(0,0,0,${fa})`;x.fillRect(0,0,cw,ch)}
+      const fa=fadeA(v.currentTime,A,B);if(fa>0){x.fillStyle=`rgba(0,0,0,${fa})`;x.fillRect(0,0,cw,ch)}
       if(s.txt){
         x.font=`700 ${s.sz*ch/100}px sans-serif`;x.textAlign='center';x.textBaseline='middle';
         x.lineWidth=ch/150;x.strokeStyle='#000';x.fillStyle='#fff';
         const y=s.pos==='top'?ch*.1:s.pos==='mid'?ch*.5:ch*.9;
         x.strokeText(s.txt,cw/2,y,cw*.92);x.fillText(s.txt,cw/2,y,cw*.92);
       }
-      $('#bi').style.width=Math.min(100,(v.currentTime-s.a)/(s.b-s.a)*100)+'%';
-      if(v.currentTime>=s.b||v.ended){v.pause();rec.stop();return}
+      $('#bi').style.width=Math.min(100,(off+v.currentTime-A)/tot*100)+'%';
+      if(v.currentTime>=B||v.ended){v.pause();off+=B-A;if(++k<clips.length){loadClip(k).then(()=>v.play()).then(draw)}else rec.stop();return}
       requestAnimationFrame(draw);
     };
-    draw();await done;bar.style.display='none';
+    draw();await done;bar.style.display='none';mus.pause();v.onloadedmetadata=h0;if(k>0||v.src!==url)v.src=url;
     return new Blob(chunks,{type:mime.split(';')[0]});
   }
 };
@@ -265,7 +160,7 @@ async function save(quiet){
   if(!cur)return;
   try{
     cur.updated=Date.now();
-    await Store.put({id:cur.id,name:cur.name||'Sin título',blob:cur.blob,s:cur.s,updated:cur.updated});
+    await Store.put({id:cur.id,name:cur.name||'Sin título',blob:cur.blob,s:cur.s,extra:cur.extra,photos:cur.photos,music:cur.music,updated:cur.updated});
     await renderLib();
     if(!quiet){$('#save').textContent='Guardado';setTimeout(()=>$('#save').textContent='Guardar proyecto',1200)}
   }catch(e){$('#libnote').textContent='No se pudo guardar en este navegador.'}
@@ -296,4 +191,5 @@ bind();
 Store.open().then(renderLib).catch(()=>{$('#libnote').textContent='La base de datos no está disponible en este navegador.'});
 </script>
 </body>
-</html>
+  </html>
+  
